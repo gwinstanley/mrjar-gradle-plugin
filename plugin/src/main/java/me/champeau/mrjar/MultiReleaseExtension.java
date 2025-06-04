@@ -22,6 +22,8 @@ import org.gradle.api.attributes.LibraryElements;
 import org.gradle.api.file.ConfigurableFileCollection;
 import org.gradle.api.file.FileCollection;
 import org.gradle.api.java.archives.Attributes;
+import org.gradle.api.logging.Logger;
+import org.gradle.api.logging.Logging;
 import org.gradle.api.model.ObjectFactory;
 import org.gradle.api.plugins.ApplicationPlugin;
 import org.gradle.api.plugins.ExtensionContainer;
@@ -45,6 +47,8 @@ import org.gradle.jvm.toolchain.JavaToolchainService;
 import org.gradle.language.base.plugins.LifecycleBasePlugin;
 
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Optional;
 import java.util.stream.Stream;
 import javax.inject.Inject;
 
@@ -59,6 +63,7 @@ public abstract class MultiReleaseExtension {
     private final PluginManager pluginManager;
     private final ExtensionContainer extensions;
     private final Property<Boolean> sharedToolchain;
+    private final Logger logger;
 
     @Inject
     public MultiReleaseExtension(JavaPluginExtension javaPluginExtension,
@@ -80,6 +85,7 @@ public abstract class MultiReleaseExtension {
         this.pluginManager = pluginManager;
         this.extensions = extensions;
         this.sharedToolchain = objects.property(Boolean.class);
+        this.logger = Logging.getLogger(MultiReleaseJarPlugin.class);
     }
 
 
@@ -100,6 +106,7 @@ public abstract class MultiReleaseExtension {
     }
 
     private void addLanguageVersion(int maxVersion, int version, String mainSourceDirectory, String testSourceDirectory) {
+        logger.info("Configuring multi-release support for Java {}", version);
         String javaX = "java" + version;
         // First, let's create a source set for this language version
         SourceSet langSourceSet = sourceSets.create(javaX, srcSet -> srcSet.getJava().srcDir(mainSourceDirectory + javaX));
@@ -118,22 +125,26 @@ public abstract class MultiReleaseExtension {
 
         // then configure the compile task so that it uses the expected Gradle version
         JavaLanguageVersion jlv = JavaLanguageVersion.of(isUseSharedToolchain() ? maxVersion : version);
+        logger.info("Setting JavaCompile toolchain for Java {}: {}", version, jlv);
         Provider<JavaCompiler> targetCompiler = javaToolchains.compilerFor(spec -> spec.getLanguageVersion().convention(jlv));
         tasks.named(langSourceSet.getCompileJavaTaskName(), JavaCompile.class, task -> {
                 task.getJavaCompiler().convention(targetCompiler);
                 if (isUseSharedToolchain()) {
+                  logger.info("Setting release version {} for JavaCompile task '{}'", version, task.getName());
                   task.getOptions().getRelease().convention(version);
                 }
         });
         tasks.named(testSourceSet.getCompileJavaTaskName(), JavaCompile.class, task -> {
                 task.getJavaCompiler().convention(targetCompiler);
                 if (isUseSharedToolchain()) {
+                  logger.info("Setting release version {} for JavaCompile task '{}'", version, task.getName());
                   task.getOptions().getRelease().convention(version);
                 }
         });
 
         // let's make sure to create a "test" task
         Provider<JavaLauncher> targetLauncher = javaToolchains.launcherFor(spec -> spec.getLanguageVersion().convention(jlv));
+        logger.info("Setting JavaLauncher toolchain for Java {}: {}", version, jlv);
 
         Configuration testImplementation = configurations.getByName(testSourceSet.getImplementationConfigurationName());
         testImplementation.extendsFrom(configurations.getByName(sharedTestSourceSet.getImplementationConfigurationName()));
@@ -186,6 +197,7 @@ public abstract class MultiReleaseExtension {
 
     private void configureMrJar(int version, SourceSet languageSourceSet) {
         tasks.named("jar", Jar.class, jar -> {
+            logger.info("Configuring Jar task for Java version: {}", version);
             jar.into("META-INF/versions/" + version, s -> s.from(languageSourceSet.getOutput()));
             Attributes attributes = jar.getManifest().getAttributes();
             attributes.put("Multi-Release", "true");
@@ -194,6 +206,7 @@ public abstract class MultiReleaseExtension {
 
     private void defaultLanguageVersion(int maxVersion, int version) {
         JavaLanguageVersion jlv = JavaLanguageVersion.of(isUseSharedToolchain() ? maxVersion : version);
+        logger.info("Setting default Java version: {}", jlv);
         javaPluginExtension.getToolchain().getLanguageVersion().convention(jlv);
         // Set release for main/test compile tasks if using shared toolchain
         if (isUseSharedToolchain()) {
@@ -201,6 +214,7 @@ public abstract class MultiReleaseExtension {
                   .map(ssn -> sourceSets.named(ssn, SourceSet.class).get())
                   .map(ss -> ss.getCompileJavaTaskName())
                   .forEach(taskName -> {
+                    logger.info("Setting release version {} for JavaCompile task '{}'", version, taskName);
                     tasks.named(taskName, JavaCompile.class, task -> {
                         task.getOptions().getRelease().set(version);
                     });
@@ -209,6 +223,7 @@ public abstract class MultiReleaseExtension {
     }
 
     public void sharedToolchain(boolean useSharedToolchain) {
+        logger.info("Setting shared Java toolchain");
         sharedToolchain.set(useSharedToolchain);
     }
     private boolean isUseSharedToolchain() {
