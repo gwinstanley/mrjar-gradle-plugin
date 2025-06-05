@@ -46,6 +46,8 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 import org.gradle.jvm.toolchain.JavaToolchainService;
 import org.gradle.language.base.plugins.LifecycleBasePlugin;
 
+import groovy.lang.Tuple;
+import groovy.lang.Tuple2;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Optional;
@@ -92,6 +94,7 @@ public abstract class MultiReleaseExtension {
     public void targetVersions(String mainSourceDirectory, String testSourceDirectory, int defaultVersion, int... versions) {
         int maxVersion = Arrays.stream(versions).max().getAsInt();
         defaultLanguageVersion(maxVersion, defaultVersion);
+        Arrays.sort(versions);
         for (int version : versions) {
             addLanguageVersion(maxVersion, version, mainSourceDirectory, testSourceDirectory);
         }
@@ -113,6 +116,28 @@ public abstract class MultiReleaseExtension {
         SourceSet testSourceSet = sourceSets.create(javaX + "Test", srcSet -> srcSet.getJava().srcDir(testSourceDirectory + javaX));
         SourceSet sharedSourceSet = sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME);
         SourceSet sharedTestSourceSet = sourceSets.findByName(SourceSet.TEST_SOURCE_SET_NAME);
+
+        // Any javaX configuration should extend from similar configuration of closest lower version
+        configurations.matching(config -> config.getName().startsWith(javaX)).configureEach(specific -> {
+            String noPrefix = specific.getName().replace(javaX, "");
+            // Find closest lower version configuration
+            Optional<Configuration> cc = configurations.matching(c -> c.getName().matches("java\\d+" + noPrefix)).stream()
+                    .map(c -> Tuple.tuple(c, Integer.valueOf(c.getName().replace("java", "").replace(noPrefix, ""))))
+                    .filter(t -> t.getV2() < version)
+                    .sorted(Comparator.<Tuple2<Configuration, Integer>>comparingInt(Tuple2::getV2).reversed())
+                    .map(t -> t.getV1()).findFirst();
+            if (cc.isPresent()) {
+                logger.info("Setting configuration '{}' extendsFrom '{}'", specific.getName(), cc.get().getName());
+                specific.extendsFrom(cc.get());
+            } else {
+                String sharedName = noPrefix.substring(0, 1).toLowerCase().concat(noPrefix.substring(1));
+                Configuration sharedConfig = configurations.findByName(sharedName);
+                if (sharedConfig != null) {
+                    logger.info("Setting configuration '{}' extendsFrom '{}'", specific.getName(), sharedConfig.getName());
+                    specific.extendsFrom(sharedConfig);
+                }
+            }
+        });
 
         // This is only necessary because in real life, we have dependencies between classes
         // and what you're likely to want to do, is to provide a JDK 9 specific class, which depends on common
@@ -146,10 +171,7 @@ public abstract class MultiReleaseExtension {
         Provider<JavaLauncher> targetLauncher = javaToolchains.launcherFor(spec -> spec.getLanguageVersion().convention(jlv));
         logger.info("Setting JavaLauncher toolchain for Java {}: {}", version, jlv);
 
-        Configuration testImplementation = configurations.getByName(testSourceSet.getImplementationConfigurationName());
-        testImplementation.extendsFrom(configurations.getByName(sharedTestSourceSet.getImplementationConfigurationName()));
         Configuration testCompileOnly = configurations.getByName(testSourceSet.getCompileOnlyConfigurationName());
-        testCompileOnly.extendsFrom(configurations.getByName(sharedTestSourceSet.getCompileOnlyConfigurationName()));
         testCompileOnly.getDependencies().add(dependencies.create(langSourceSet.getOutput().getClassesDirs()));
         testCompileOnly.getDependencies().add(dependencies.create(sharedSourceSet.getOutput().getClassesDirs()));
 
